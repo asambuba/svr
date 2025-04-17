@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Fake VR Control (Three.js) with Cannon.js Physics and Cartoon Effect</title>
+<style>
+  body { margin: 0; overflow: hidden; background-color: #333; cursor: none; } /* Скрываем курсор всегда */
+  body.dragging { cursor: grabbing; }
+  .container {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    cursor: grab;
+  }
+  .crosshair {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 20px;
+    height: 20px;
+    pointer-events: none;
+    z-index: 10; /* Чтобы был поверх всего */
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+  .crosshair::before,
+  .crosshair::after {
+    content: '';
+    position: absolute;
+    background-color: rgba(255, 255, 255, 0.5);
+  }
+  .crosshair::before {
+    width: 10px;
+    height: 2px;
+  }
+  .crosshair::after {
+    width: 2px;
+    height: 10px;
+  }
+  .error-message {
+    position: fixed;
+    bottom: 20px;
+    left: 20px;
+    background-color: rgba(255, 0, 0, 0.7);
+    color: white;
+    padding: 10px;
+    border-radius: 5px;
+    font-family: Arial, sans-serif;
+    z-index: 1000;
+    display: none;
+  }
+  .debug-info {
+    position: fixed;
+    top: 10px;
+    left: 10px;
+    background-color: rgba(0, 0, 0, 0.5);
+    color: white;
+    padding: 5px;
+    font-family: monospace;
+    z-index: 100;
+  }
+  #chat-container {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    color: white;
+    font-family: monospace;
+    z-index: 1000;
+    display: none; /* Initially hidden */
+    flex-direction: column;
+  }
+  #chat-messages {
+    padding: 5px;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  #chat-input-container {
+    display: flex;
+    padding: 5px;
+  }
+  #chat-input {
+    flex-grow: 1;
+    background-color: rgba(0, 0, 0, 0.7);
+    color: white;
+    border: none;
+    padding: 8px;
+    font-family: monospace;
+  }
+  #chat-input:focus {
+    outline: none;
+  }
+</style>
+</head>
+<body>
+  <div class="container" id="container">
+  </div>
+  <div class="crosshair"></div>
+  <div class="error-message" id="errorMessage"></div>
+  <div class="debug-info" id="debugInfo"></div>
+  <div id="chat-container">
+    <div id="chat-messages"></div>
+    <div id="chat-input-container">
+      <input type="text" id="chat-input" style="display: none;">
+    </div>
+  </div>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r134/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cannon@0.6.2/build/cannon.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+  <script>
+    const socket = io.connect('http://' + document.domain + ':' + location.port);
+    let myPlayerId = null;
+    const otherPlayers = {}; // Object to store other players' representations
+    // Chat elements
+    const chatContainer = document.getElementById('chat-container');
+    const chatInput = document.getElementById('chat-input');
+    const chatMessages = document.getElementById('chat-messages');
+    let chatOpen = false;
+    // Error handling functions
+    function showError(message, duration = 3000) {
+      try {
+        const errorElement = document.getElementById('errorMessage');
+        if (!errorElement) throw new Error('Error element not found');
+
+        errorElement.textContent = message;
+        errorElement.style.display = 'block';
+
+        setTimeout(() => {
+          errorElement.style.display = 'none';
+        }, duration);
+      } catch (err) {
+        console.error('Error in showError function:', err);
+      }
+    }
+    socket.on('player_connected', function(data) {
+        myPlayerId = data.id;
+        console.log('My Player ID:', myPlayerId);
+        for (const id in data.players) {
+            if (id !== myPlayerId) {
+                addOtherPlayer(id, data.players[id]); // Pass the whole player data
+            }
+        }
+    });
+
+    socket.on('new_player', function(data) {
+        if (data.id !== myPlayerId) {
+            console.log('New player joined:', data.id);
+            addOtherPlayer(data.id, {
+                position: { x: 0, y: 1.5, z: 5 },
+                rotation: { x: 0, y: 0, z: 0 },
+                leftArm: { position: { x: -1.2, y: -0.8, z: -1.8 }, rotation: { x: 0, y: 0, z: 0 } },
+                rightArm: { position: { x: 1.2, y: -0.8, z: -1.8 }, rotation: { x: 0, y: 0, z: 0 } }
+            });
+        }
+    });
+    function addOtherPlayer(id, playerData) {
+        const playerGeometry = new THREE.BoxGeometry(1, 2, 1);
+        const playerMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+        const otherPlayer = new THREE.Mesh(playerGeometry, playerMaterial);
+        otherPlayer.position.set(playerData.position.x, playerData.position.y, playerData.position.z);
+        otherPlayer.rotation.set(playerData.rotation.x, playerData.rotation.y, playerData.rotation.z);
+        scene.add(otherPlayer);
+
+        // Create arm representations for the other player
+        const armGeometry = new THREE.BoxGeometry(0.7, 1.1, 0.7);
+        const armMaterial = new THREE.MeshBasicMaterial({ color: 0x00ff00 });
+
+        const leftArmOther = new THREE.Mesh(armGeometry, armMaterial);
+        leftArmOther.position.copy(playerData.leftArm.position);
+        leftArmOther.rotation.copy(playerData.leftArm.rotation);
+        otherPlayer.add(leftArmOther); // Add arms as children of the player
+
+        const rightArmOther = new THREE.Mesh(armGeometry, armMaterial);
+        rightArmOther.position.copy(playerData.rightArm.position);
+        rightArmOther.rotation.copy(playerData.rightArm.rotation);
+        otherPlayer.add(rightArmOther);
+
+        otherPlayers[id] = { player: otherPlayer, leftArm: leftArmOther, rightArm: rightArmOther };
+    }
+
+    socket.on('player_disconnected', function(data) {
+        if (otherPlayers[data.id]) {
+            scene.remove(otherPlayers[data.id].player);
+            delete otherPlayers[data.id];
+            console.log('Player disconnected:', data.id);
+        }
+    });
+
+    socket.on('player_updated', function(data) {
+        if (otherPlayers[data.id]) {
+            otherPlayers[data.id].player.position.set(data.position.x, data.position.y, data.position.z);
+            otherPlayers[data.id].player.rotation.set(data.rotation.x, data.rotation.y, data.rotation.z);
+            if (data.leftArm) {
+                otherPlayers[data.id].leftArm.position.copy(data.leftArm.position);
+                otherPlayers[data.id].leftArm.rotation.copy(data.leftArm.rotation);
+            }
+            if (data.rightArm) {
+                otherPlayers[data.id].rightArm.position.copy(data.rightArm.position);
+                otherPlayers[data.id].rightArm.rotation.copy(data.rightArm.rotation);
+            }
+        }
+    });
+    // Debug function to display camera info
+    function updateDebugInfo(info) {
+      try {
+        const debugElement = document.getElementById('debugInfo');
+        if (debugElement) {
+          debugElement.textContent = info;
+        }
+      } catch (err) {
+        console.error('Error updating debug info:', err);
+      }
+    }
+
+    // Utility function to safely execute code with error handling
+    function safeExecute(fn, errorMessage) {
+      try {
+        return fn();
+      } catch (err) {
+        console.error(errorMessage, err);
+        showError(`${errorMessage}: ${err.message}`);
+        return null;
+      }
+    }
+
+    // Check dependencies
+    try {
+      if (typeof THREE === 'undefined') throw new Error('Three.js not loaded');
+      if (typeof CANNON === 'undefined') throw new Error('Cannon.js not loaded');
+    } catch (err) {
+      console.error('Dependency error:', err);
+      showError(`Dependency error: ${err.message}`);
+    }
+document.addEventListener('DOMContentLoaded', function() {
+      const backgroundMusic = document.getElementById('backgroundMusic');
+      let musicPlayed = false;
+
+      function playMusicOnFirstClick() {
+        if (!musicPlayed) {
+          backgroundMusic.play();
+          musicPlayed = true;
+          // Удаляем обработчик события после первого клика
+          document.removeEventListener('click', playMusicOnFirstClick);
+        }
+      }
+
+      // Добавляем обработчик события клика к документу
+      document.addEventListener('click', playMusicOnFirstClick);
+});
+    // Three.js scene setup
+    let scene, camera, renderer;
+    try {
+      scene = new THREE.Scene();
+      // Увеличенный FOV с 75 до 85
+      camera = new THREE.PerspectiveCamera(105, window.innerWidth / window.innerHeight, 0.1, 1000);
+      renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      // Включаем тени
+      renderer.shadowMap.enabled = false;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      document.body.appendChild(renderer.domElement);
+    } catch (err) {
+      console.error('Error initializing Three.js:', err);
+      showError(`Failed to initialize 3D scene: ${err.message}`);
+    }
+
+// Более яркий цвет фонового освещения
+const ambientLight = new THREE.AmbientLight(0xffffff, 0.3); // Увеличиваем интенсивность
+scene.add(ambientLight);
+
+const directionalLight = new THREE.DirectionalLight(0xffffff, 1.0); // Увеличиваем интенсивность
+directionalLight.position.set(5, 10, 5);
+directionalLight.castShadow = true;
+directionalLight.shadow.mapSize.width = 1024;
+directionalLight.shadow.mapSize.height = 1024;
+directionalLight.shadow.camera.near = 0.5;
+directionalLight.shadow.camera.far = 50;
+directionalLight.shadow.camera.left = -10;
+directionalLight.shadow.camera.right = 10;
+directionalLight.shadow.camera.top = 10;
+directionalLight.shadow.camera.bottom = -10;
+scene.add(directionalLight);
+
+    // Grid as floor
+    const gridHelper = new THREE.GridHelper(60, 60);
+    scene.add(gridHelper);
+
+    // Добавляем плоскость для теней
+    const floorGeometry = new THREE.PlaneGeometry(20, 20);
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: 0x333333,
+      transparent: true,
+      opacity: 0.5,
+      roughness: 1,
+      metalness: 1
+    });
+    const floor = new THREE.Mesh(floorGeometry, floorMaterial);
+    floor.rotation.x = -Math.PI / 2;
+    floor.receiveShadow = true;
+    scene.add(floor);
+
+    const groundLevel = 0; // Floor level on Y
+
+    // First-person camera and controls
+    camera.position.set(0, 1.5, 5);
+
+    // Create camera holder for proper rotations
+    const cameraHolder = new THREE.Object3D();
+    scene.add(cameraHolder);
+    cameraHolder.add(camera);
+
+    // Euler rotation order to prevent gimbal lock issues
+    camera.rotation.order = 'YXZ';
+
+    // Camera rotation state
+    let pitch = 0; // Up/down rotation (X-axis)
+    let yaw = 0;   // Left/right rotation (Y-axis)
+
+    // Hands (short cubes)
+    let leftArm, rightArm;
+    try {
+      const armGeometry = new THREE.BoxGeometry(0.7, 1.1, 0.7);
+      const armMaterial = new THREE.MeshStandardMaterial({
+        color: 0xffffffffff,
+        roughness: 0,
+        metalness: 0
+      });
+
+      leftArm = new THREE.Mesh(armGeometry, armMaterial);
+      leftArm.position.set(-1.2, -0.8, -1.8);
+      leftArm.castShadow = true;
+      leftArm.receiveShadow = true;
+      camera.add(leftArm);
+
+      // Создаем контур для мультяшного эффекта
+      const leftArmOutline = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7 * 1.05, 1.1 * 1.05, 0.7 * 1.05),
+        new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide })
+      );
+      leftArm.add(leftArmOutline);
+
+      rightArm = new THREE.Mesh(armGeometry, armMaterial);
+      rightArm.position.set(1.2, -0.8, -1.8);
+      rightArm.castShadow = true;
+      rightArm.receiveShadow = true;
+      camera.add(rightArm);
+
+      // Создаем контур для мультяшного эффекта
+      const rightArmOutline = new THREE.Mesh(
+        new THREE.BoxGeometry(0.7 * 1.05, 1.1 * 1.05, 0.7 * 1.05),
+        new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide })
+      );
+      rightArm.add(rightArmOutline);
+    } catch (err) {
+      console.error('Error creating arms:', err);
+      showError(`Failed to create virtual arms: ${err.message}`);
+    }
+
+    // Save initial positions and rotations of hands
+    const initialLeftArmPosition = new THREE.Vector3().copy(leftArm.position);
+    const initialRightArmPosition = new THREE.Vector3().copy(rightArm.position);
+    const initialLeftArmRotation = new THREE.Euler().copy(leftArm.rotation);
+    const initialRightArmRotation = new THREE.Euler().copy(rightArm.rotation);
+
+    const body = document.body;
+    const container = document.getElementById('container');
+
+    let isDraggingRed = false;
+    let isDraggingBlue = false;
+    let isAnyMouseButtonPressed = false;
+
+    let lastMouseX = 0;
+    let lastMouseY = 0;
+
+    const rotationSpeed = 0.003; // Reduce hand rotation speed
+    const moveSpeed = 0.0025; // Reduce hand movement speed
+    const shakeIntensity = 0.065;
+    const cameraSensitivity = 0.001; // Camera rotation sensitivity
+    const cameraMoveSpeedKeys = 0.1; // Camera movement speed with keys (for player)
+    const cameraRunSpeedKeys = 0.2; // Camera movement speed while running (for player)
+    const gravity = 0.02;
+    const jumpForce = 0.2;
+    let playerVelocity = new THREE.Vector3(0, 0, 0);
+
+    let moveForward = false;
+    let moveBackward = false;
+    let moveLeft = false;
+    let moveRight = false;
+    let isRunning = false; // Добавили переменную для бега
+
+    // Player cube (now invisible)
+    let player;
+    try {
+      const playerGeometry = new THREE.BoxGeometry(1, 2, 1);
+      const playerMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, visible: false });
+      player = new THREE.Mesh(playerGeometry, playerMaterial);
+      player.position.set(0, 1, 0);
+      scene.add(player);
+    } catch (err) {
+      console.error('Error creating player:', err);
+      showError(`Failed to create player object: ${err.message}`);
+    }
+
+    container.addEventListener('click', function() {
+      safeExecute(() => {
+        container.requestPointerLock = container.requestPointerLock ||
+                                      container.mozRequestPointerLock ||
+                                      container.webkitRequestPointerLock;
+        if (container.requestPointerLock) {
+          container.requestPointerLock();
+        } else {
+          throw new Error('Pointer lock not supported by your browser');
+        }
+      }, 'Failed to request pointer lock');
+    }, false);
+
+    document.addEventListener('pointerlockchange', lockChangeAlert, false);
+    document.addEventListener('mozpointerlockchange', lockChangeAlert, false);
+    document.addEventListener('webkitpointerlockchange', lockChangeAlert, false);
+
+    let isPointerLocked = false;
+
+    function lockChangeAlert() {
+      safeExecute(() => {
+        if (document.pointerLockElement === container ||
+            document.mozPointerLockElement === container ||
+            document.webkitPointerLockElement === container) {
+          console.log('The pointer lock status is now locked');
+          document.addEventListener("mousemove", moveCallback, false);
+          isPointerLocked = true;
+        } else {
+          console.log('The pointer lock status is now unlocked');
+          document.removeEventListener("mousemove", moveCallback, false);
+          isPointerLocked = false;
+        }
+      }, 'Error handling pointer lock change');
+    }
+
+    function moveCallback(e) {
+      safeExecute(() => {
+        if (!isPointerLocked) return;
+
+        const deltaX = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+        const deltaY = e.movementY || e.mozMovementY || e.webkitMovementY || 0;
+
+        // Update camera rotation - fixed consistent behavior
+        yaw -= deltaX * cameraSensitivity;
+        pitch -= deltaY * cameraSensitivity;
+
+        // Limit vertical rotation to prevent flipping (-85 to +85 degrees)
+        pitch = Math.max(-Math.PI * 0.47, Math.min(Math.PI * 0.47, pitch));
+
+        // Apply rotations directly to camera
+        camera.rotation.x = pitch;
+        camera.rotation.y = yaw;
+
+        // Update debug info
+        updateDebugInfo(`Pitch: ${pitch.toFixed(2)}, Yaw: ${yaw.toFixed(2)}, Running: ${isRunning}`);
+      }, 'Error handling mouse movement');
+    }
+
+    document.addEventListener('keydown', function(event) {
+      safeExecute(() => {
+        switch (event.key) {
+          case 'w':
+          case 'W':
+            moveForward = true;
+            break;
+          case 's':
+          case 'S':
+            moveBackward = true;
+            break;
+          case 'a':
+          case 'A':
+            moveLeft = true;
+            break;
+          case 'd':
+          case 'D':
+            moveRight = true;
+            break;
+          case 'Shift': // Shift для бега
+            isRunning = true;
+            break;
+          case ' ': // Space for jump
+            if (Math.abs(playerVelocity.y) < 0.001) { // Check if on the ground
+              playerVelocity.y = jumpForce;
+            }
+            break;
+          case 'Escape':
+            document.exitPointerLock = document.exitPointerLock ||
+                                        document.mozExitPointerLock ||
+                                        document.webkitExitPointerLock;
+            if (document.exitPointerLock) {
+              document.exitPointerLock();
+            }
+            break;
+        }
+      }, 'Error handling key press');
+    });
+    document.addEventListener('keydown', function(event) {
+        safeExecute(() => {
+            if (event.key === 't' && !chatOpen) {
+                chatOpen = true;
+                chatContainer.style.display = 'flex';
+                chatInput.style.display = 'block';
+                chatInput.focus();
+            } else if (event.key === 'Escape' && chatOpen) {
+                chatOpen = false;
+                chatContainer.style.display = 'none';
+                chatInput.style.display = 'none';
+                container.focus(); // Re-focus the game container if needed
+            } else if (event.key === 'Enter' && chatOpen && document.activeElement === chatInput) {
+                const message = chatInput.value.trim();
+                if (message) {
+                    socket.emit('send_message', message);
+                    chatInput.value = '';
+                }
+            }
+            // ... your existing keydown handling ...
+        }, 'Error handling key press');
+    });
+    socket.on('receive_message', function(data) {
+        const newMessage = document.createElement('div');
+        newMessage.textContent = `${data.sender}: ${data.text}`;
+        chatMessages.appendChild(newMessage);
+        chatMessages.scrollTop = chatMessages.scrollHeight; // Scroll to the bottom
+    });
+    document.addEventListener('keyup', function(event) {
+      safeExecute(() => {
+        switch (event.key) {
+          case 'w':
+          case 'W':
+            moveForward = false;
+            break;
+          case 's':
+          case 'S':
+            moveBackward = false;
+            break;
+          case 'a':
+          case 'A':
+            moveLeft = false;
+            break;
+          case 'd':
+          case 'D':
+            moveRight = false;
+            break;
+          case 'Shift': // Отпускаем Shift - заканчиваем бег
+            isRunning = false;
+            break;
+        }
+      }, 'Error handling key release');
+    });
+
+    // Animation parameters for returning hands
+    const animationDuration = 15000; // 1 second
+    let leftArmAnimationStartTime = null;
+    let rightArmAnimationStartTime = null;
+    let animatingLeftArm = false;
+    let animatingRightArm = false;
+    const returnAnimationSpeed = 0.01; // Adjust for desired animation speed
+
+    // Sine Out easing function
+    function sineOut(t) {
+      return Math.sin((t * Math.PI) / 3);
+    }
+
+    document.addEventListener('mousedown', (e) => {
+      safeExecute(() => {
+        isAnyMouseButtonPressed = true;
+        body.classList.add('dragging');
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+
+        if (e.button === 0) { // Left mouse button
+          isDraggingRed = true;
+          animatingLeftArm = false; // Stop any ongoing return animation
+        } else if (e.button === 2) { // Right mouse button
+          isDraggingBlue = true;
+          animatingRightArm = false; // Stop any ongoing return animation
+        }
+      }, 'Error handling mouse button press');
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      safeExecute(() => {
+        const deltaX = e.movementX || e.mozMovementX || e.webkitMovementX || 0;
+        const deltaY = e.movementY || e.mozMovementY || e.webkitMovementY || 0;
+
+        // We've moved the camera rotation logic to moveCallback for pointer lock
+
+        if (isDraggingRed) {
+          leftArm.rotation.y += deltaX * rotationSpeed;
+          leftArm.rotation.x -= deltaY * rotationSpeed;
+          leftArm.position.x += deltaX * moveSpeed;
+          leftArm.position.y -= deltaY * moveSpeed;
+          renderer.render(scene, camera);
+        }
+        if (isDraggingBlue) {
+          rightArm.rotation.y += deltaX * rotationSpeed;
+          rightArm.rotation.x -= deltaY * rotationSpeed;
+          rightArm.position.x += deltaX * moveSpeed;
+          rightArm.position.y -= deltaY * moveSpeed;
+          renderer.render(scene, camera);
+        }
+
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+      }, 'Error handling mouse movement');
+    });
+
+    document.addEventListener('mouseup', (e) => {
+      safeExecute(() => {
+        if (e.button === 0) { // Left mouse button released
+          isDraggingRed = false;
+          animatingLeftArm = true;
+          leftArmAnimationStartTime = performance.now();
+        } else if (e.button === 2) { // Right mouse button released
+          isDraggingBlue = false;
+          animatingRightArm = true;
+          rightArmAnimationStartTime = performance.now();
+        }
+
+        if (!isDraggingRed && !isDraggingBlue) {
+          isAnyMouseButtonPressed = false;
+          body.classList.remove('dragging');
+        }
+      }, 'Error handling mouse button release');
+    });
+
+    document.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+    });
+
+    // Cannon.js physics world setup
+    let world, cubePhysicsBodies = [], cubeMeshes = [], cubeOutlines = [], originalCubeMaterials = [];
+    try {
+      world = new CANNON.World();
+      world.gravity.set(0, -9.82, 0); // Set gravity
+
+      const cubeSize = 2;
+      const halfCubeSize = cubeSize / 2;
+      const numCubes = 5;
+
+      // Изменили на пастельные цвета
+      const cubeColors = [
+        0xffb3ba, // пастельный красный
+        0xbae1ff, // пастельный синий
+        0xbaffc9, // пастельный зеленый
+        0xffffba, // пастельный желтый
+        0xffdfba  // пастельный оранжевый
+      ];
+
+      for (let i = 0; i < numCubes; i++) {
+        const cubeGeometry = new THREE.BoxGeometry(cubeSize, cubeSize, cubeSize);
+        const cubeMaterial = new THREE.MeshStandardMaterial({
+          color: cubeColors[i],
+          roughness: 0.5,
+          metalness: 0.1
+        });
+        const cubeMesh = new THREE.Mesh(cubeGeometry, cubeMaterial);
+        cubeMesh.position.set(Math.random() * 3 - 1.5, i * cubeSize + 2, Math.random() * 3 - 1.5);
+        cubeMesh.castShadow = true;
+        cubeMesh.receiveShadow = true;
+        scene.add(cubeMesh);
+        cubeMeshes.push(cubeMesh);
+
+        // Добавляем черный контур для мультяшного эффекта
+        const outlineGeometry = new THREE.BoxGeometry(cubeSize * 1.05, cubeSize * 1.05, cubeSize * 1.05);
+        const outlineMaterial = new THREE.MeshBasicMaterial({
+          color: 0x000000,
+          side: THREE.BackSide
+        });
+        const outline = new THREE.Mesh(outlineGeometry, outlineMaterial);
+        cubeMesh.add(outline);
+        cubeOutlines.push(outline);
+
+        originalCubeMaterials.push(cubeMaterial);
+
+        const cubeShape = new CANNON.Box(new CANNON.Vec3(halfCubeSize, halfCubeSize, halfCubeSize));
+        const cubeBody = new CANNON.Body({
+          mass: 1,
+          position: new CANNON.Vec3(cubeMesh.position.x, cubeMesh.position.y, cubeMesh.position.z),
+          shape: cubeShape
+        });
+        world.addBody(cubeBody);
+        cubePhysicsBodies.push(cubeBody);
+      }
+
+      // Physics for the ground
+      const groundShape = new CANNON.Plane();
+      const groundBody = new CANNON.Body({ mass: 0, shape: groundShape });
+      groundBody.quaternion.setFromAxisAngle(new CANNON.Vec3(1, 0, 0), -Math.PI / 2);
+      world.addBody(groundBody);
+    } catch (err) {
+      console.error('Error setting up physics:', err);
+      showError(`Failed to initialize physics: ${err.message}`);
+    }
+
+    const touchedCubes = new Set(); // Keep track of touched cubes
+
+    function animate() {
+      requestAnimationFrame(animate);
+
+      safeExecute(() => {
+        // Update physics world
+        world.step(1/60);
+            if (myPlayerId) {
+                const leftArmWorldPosition = new THREE.Vector3();
+                leftArm.getWorldPosition(leftArmWorldPosition);
+                const leftArmWorldRotation = new THREE.Euler().copy(leftArm.rotation); // Or get world rotation if needed
+
+                const rightArmWorldPosition = new THREE.Vector3();
+                rightArm.getWorldPosition(rightArmWorldPosition);
+                const rightArmWorldRotation = new THREE.Euler().copy(rightArm.rotation); // Or get world rotation
+
+                socket.emit('update_player', {
+                    position: { x: camera.position.x, y: camera.position.y - 1.5, z: camera.position.z },
+                    rotation: { x: camera.rotation.x, y: camera.rotation.y, z: camera.rotation.z },
+                    leftArm: { position: leftArm.position.toArray(), rotation: leftArm.rotation.toArray() }, // Send local positions/rotations relative to camera
+                    rightArm: { position: rightArm.position.toArray(), rotation: rightArm.rotation.toArray() }
+                });
+            }
+        // Update Three.js objects with Cannon.js body positions
+        for (let i = 0; i < cubeMeshes.length; i++) {
+          cubeMeshes[i].position.copy(cubePhysicsBodies[i].position);
+          cubeMeshes[i].quaternion.copy(cubePhysicsBodies[i].quaternion);
+          // Reset transparency if not currently touched
+          if (!touchedCubes.has(cubeMeshes[i])) {
+            cubeMeshes[i].material.transparent = false;
+            cubeMeshes[i].material.opacity = 1;
+          }
+        }
+        touchedCubes.clear(); // Clear the set for the current frame
+
+        // Calculate movement direction vectors based on camera orientation
+        const direction = new THREE.Vector3();
+        const rotation = camera.getWorldQuaternion(new THREE.Quaternion());
+
+        // Forward/backward vector (z-axis)
+        const forwardVector = new THREE.Vector3(0, 0, -1).applyQuaternion(rotation);
+        forwardVector.y = 0; // Keep movement on xz plane
+        forwardVector.normalize();
+
+        // Right/left vector (x-axis)
+        const rightVector = new THREE.Vector3(1, 0, 0).applyQuaternion(rotation);
+        rightVector.y = 0; // Keep movement on xz plane
+        rightVector.normalize();
+
+        // Определяем текущую скорость движения (обычная или бег)
+        const currentSpeed = isRunning ? cameraRunSpeedKeys : cameraMoveSpeedKeys;
+
+        // Apply movement based on key presses
+        if (moveForward) {
+          player.position.addScaledVector(forwardVector, currentSpeed);
+        }
+        if (moveBackward) {
+          player.position.addScaledVector(forwardVector, -currentSpeed);
+        }
+        if (moveLeft) {
+          player.position.addScaledVector(rightVector, -currentSpeed);
+        }
+        if (moveRight) {
+          player.position.addScaledVector(rightVector, currentSpeed);
+        }
+
+        // Gravity
+        playerVelocity.y -= gravity;
+        player.position.y += playerVelocity.y;
+
+        // Ground collision check (now considering cube dimensions)
+        if (player.position.y < groundLevel + 1) { // 1 - half of the cube height
+          playerVelocity.y = 0;
+          player.position.y = groundLevel + 1;
+        }
+
+        // Camera follows player position
+        camera.position.x = player.position.x;
+        camera.position.z = player.position.z;
+        camera.position.y = player.position.y + 1.5; // Offset camera upwards
+
+        // Constant hand shake
+        leftArm.position.x += (Math.random() - 0.5) * shakeIntensity;
+        leftArm.position.y += (Math.random() - 0.5) * shakeIntensity;
+        leftArm.position.z += (Math.random() - 0.5) * shakeIntensity;
+
+        rightArm.position.x += (Math.random() - 0.5) * shakeIntensity;
+        rightArm.position.y += (Math.random() - 0.5) * shakeIntensity;
+        rightArm.position.z += (Math.random() - 0.5) * shakeIntensity;
+
+        const now = performance.now();
+
+        // Animate left arm back
+        if (animatingLeftArm) {
+          const elapsedTime = now - leftArmAnimationStartTime;
+          const normalizedTime = Math.min(1, elapsedTime / animationDuration);
+          const easedTime = sineOut(normalizedTime);
+
+          leftArm.position.lerpVectors(leftArm.position, initialLeftArmPosition, easedTime);
+
+          const startQuat = new THREE.Quaternion().setFromEuler(leftArm.rotation);
+          const endQuat = new THREE.Quaternion().setFromEuler(initialLeftArmRotation);
+          THREE.Quaternion.slerp(startQuat, endQuat, leftArm.quaternion, easedTime);
+
+          if (normalizedTime >= 1) {
+            animatingLeftArm = false;
+          }
+        }
+
+        // Animate right arm back
+        if (animatingRightArm) {
+          const elapsedTime = now - rightArmAnimationStartTime;
+          const normalizedTime = Math.min(1, elapsedTime / animationDuration);
+          const easedTime = sineOut(normalizedTime);
+
+          rightArm.position.lerpVectors(rightArm.position, initialRightArmPosition, easedTime);
+
+          const startQuat = new THREE.Quaternion().setFromEuler(rightArm.rotation);
+          const endQuat = new THREE.Quaternion().setFromEuler(initialRightArmRotation);
+          THREE.Quaternion.slerp(startQuat, endQuat, rightArm.quaternion, easedTime);
+
+          if (normalizedTime >= 1) {
+            animatingRightArm = false;
+          }
+        }
+
+        // Interaction between hands and cubes (basic collision detection)
+        const leftArmWorldPosition = new THREE.Vector3();
+        leftArm.getWorldPosition(leftArmWorldPosition);
+        const rightArmWorldPosition = new THREE.Vector3();
+        rightArm.getWorldPosition(rightArmWorldPosition);
+
+        for (let i = 0; i < cubeMeshes.length; i++) {
+          const cubeWorldPosition = new THREE.Vector3().copy(cubeMeshes[i].position);
+          const distanceLeft = leftArmWorldPosition.distanceTo(cubeWorldPosition);
+          const distanceRight = rightArmWorldPosition.distanceTo(cubeWorldPosition);
+          const interactionThreshold = 0.8; // Adjust as needed
+
+          if (distanceLeft < interactionThreshold && isDraggingRed) {
+            const force = new CANNON.Vec3().copy(leftArmWorldPosition).vsub(cubeWorldPosition).unit().scale(0.5); // Reduced force
+            cubePhysicsBodies[i].applyImpulse(force, new CANNON.Vec3().copy(cubeWorldPosition).vsub(cubePhysicsBodies[i].position));
+            cubeMeshes[i].material.transparent = true;
+            cubeMeshes[i].material.opacity = 0.5;
+            touchedCubes.add(cubeMeshes[i]);
+          }
+
+          if (distanceRight < interactionThreshold && isDraggingBlue) {
+            const force = new CANNON.Vec3().copy(rightArmWorldPosition).vsub(cubeWorldPosition).unit().scale(0.5); // Reduced force
+            cubePhysicsBodies[i].applyImpulse(force, new CANNON.Vec3().copy(cubeWorldPosition).vsub(cubePhysicsBodies[i].position));
+            cubeMeshes[i].material.transparent = true;
+            cubeMeshes[i].material.opacity = 0.5;
+            touchedCubes.add(cubeMeshes[i]);
+          }
+        }
+
+        renderer.render(scene, camera);
+      }, 'Error in animation loop');
+    }
+
+    // Start animation safely
+    try {
+      animate();
+    } catch (err) {
+      console.error('Failed to start animation:', err);
+      showError('Failed to start animation. Please refresh the page.');
+    }
+
+    window.addEventListener('resize', () => {
+      safeExecute(() => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+      }, 'Error handling window resize');
+    });
+  </script>
+</body>
+</html>
